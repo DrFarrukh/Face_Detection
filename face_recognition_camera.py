@@ -1,6 +1,7 @@
 import cv2
 import torch
 import numpy as np
+import time
 from facenet_pytorch import MTCNN, InceptionResnetV1
 from process_known_faces import process_known_faces
 
@@ -19,11 +20,20 @@ def main():
     # Initialize webcam
     cap = cv2.VideoCapture(0)
     
+    # Initialize FPS calculation variables
+    fps = 0
+    frame_time = time.time()
+    
     while True:
         ret, frame = cap.read()
         if not ret:
             print("Failed to grab frame")
             break
+
+        # Calculate FPS
+        current_time = time.time()
+        fps = 1 / (current_time - frame_time)
+        frame_time = current_time
 
         # Convert frame from BGR to RGB
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -71,6 +81,10 @@ def main():
         except Exception as e:
             print(f"Error processing frame: {e}")
             continue
+
+        # Display FPS in the top-left corner
+        cv2.putText(frame, f"FPS: {fps:.1f}", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
         # Display the frame
         cv2.imshow('Face Recognition', frame)
