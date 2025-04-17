@@ -4,14 +4,63 @@ import numpy as np
 import time
 from facenet_pytorch import MTCNN, InceptionResnetV1
 from process_known_faces import process_known_faces
+from collections import deque
+
+class FastMTCNN(object):
+    """Fast MTCNN implementation for real-time face detection."""
+    
+    def __init__(self, stride=4, resize=1.0, *args, **kwargs):
+        """Initialize the FastMTCNN object.
+        
+        Args:
+            stride (int): Detection stride. Faces are detected every `stride` frames.
+            resize (float): Frame scaling factor.
+            *args, **kwargs: Arguments passed to MTCNN constructor.
+        """
+        self.stride = stride
+        self.resize = resize
+        self.mtcnn = MTCNN(*args, **kwargs)
+        self.frames_buffer = deque(maxlen=stride)
+        self.last_boxes = None
+        
+    def __call__(self, frame):
+        """Detect faces in frame using strided MTCNN."""
+        if self.resize != 1:
+            frame = cv2.resize(frame, 
+                (int(frame.shape[1] * self.resize), 
+                 int(frame.shape[0] * self.resize)))
+        
+        self.frames_buffer.append(frame)
+        
+        # Only run detection every 'stride' frames
+        if len(self.frames_buffer) == self.stride:
+            try:
+                batch_boxes, probs, _ = self.mtcnn.detect(frame, landmarks=True)
+                if batch_boxes is not None:
+                    self.last_boxes = batch_boxes
+            except Exception as e:
+                print(f"Detection error: {e}")
+            
+            self.frames_buffer.clear()
+        
+        # Return the last known boxes
+        return self.last_boxes if self.last_boxes is not None else None
 
 def cosine_similarity(embedding1, embedding2):
     return np.dot(embedding1, embedding2) / (np.linalg.norm(embedding1) * np.linalg.norm(embedding2))
 
 def main():
-    # Initialize MTCNN and InceptionResnetV1
+    # Initialize FastMTCNN and InceptionResnetV1
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    mtcnn = MTCNN(keep_all=True, device=device)
+    fast_mtcnn = FastMTCNN(
+        stride=10,  # Detect faces every 3 frames
+        resize=1.0,  # Use full resolution
+        margin=14,
+        factor=0.6,  # Smaller scaling factor for better performance
+        keep_all=True,
+        device=device,
+        post_process=True
+    )
     resnet = InceptionResnetV1(pretrained='vggface2').eval()
 
     # Load known face embeddings
@@ -22,7 +71,8 @@ def main():
     
     # Initialize FPS calculation variables
     fps = 0
-    frame_time = time.time()
+    frame_count = 0
+    start_time = time.time()
     
     while True:
         ret, frame = cap.read()
@@ -31,20 +81,22 @@ def main():
             break
 
         # Calculate FPS
-        current_time = time.time()
-        fps = 1 / (current_time - frame_time)
-        frame_time = current_time
+        frame_count += 1
+        if frame_count % 30 == 0:  # Update FPS every 30 frames
+            end_time = time.time()
+            fps = 30 / (end_time - start_time)
+            start_time = time.time()
 
         # Convert frame from BGR to RGB
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         
         try:
-            # Detect faces and get aligned face tensors
-            batch_boxes, probs, _ = mtcnn.detect(rgb_frame, landmarks=True)
+            # Detect faces using FastMTCNN
+            batch_boxes = fast_mtcnn(rgb_frame)
             
             if batch_boxes is not None:
                 # Get aligned faces
-                faces = mtcnn(rgb_frame)
+                faces = fast_mtcnn.mtcnn(rgb_frame)
                 
                 if faces is not None:
                     # Handle both single and multiple face cases
